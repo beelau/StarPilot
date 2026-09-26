@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, deque
 from math import atan2, radians
 import numpy as np
 
@@ -97,6 +97,34 @@ class DRIVER_MONITOR_SETTINGS:
     self._HI_STD_FALLBACK_TIME = int(10  / DT_DMON)  # fall back to wheel touch if model is uncertain for 10s
     self._DISTRACTED_FILTER_TS = 0.25  # 0.6Hz
 
+    # --- StarPilot stronger drowsiness (sleep) detection ---
+    # While a drowsiness signal is active, awareness drains this many times
+    # faster than the stock ladder. With the stock vision timeouts (5s/8s/13s),
+    # a factor of 2.0 reaches red in ~8s of sustained eye closure.
+    self._DROWSY_DRAIN_FACTOR = 2.0
+    # "Heavy eyelids": partial eye closure that counts toward drowsiness even
+    # though it is below the full-closure _BLINK_THRESHOLD.
+    self._DROWSY_BLINK_THRESHOLD = 0.55
+    self._DROWSY_BLINK_TIME = 3.0  # seconds of sustained heavy eyelids
+    # PERCLOS: share of the recent window spent with eyes closed.
+    self._DROWSY_PERCLOS_WINDOW = 60.  # seconds of eye-closure history
+    self._DROWSY_PERCLOS_MIN_DATA = 30.  # seconds of history before PERCLOS is valid
+    self._DROWSY_PERCLOS_CLOSED = 0.8  # closure level counted as "eyes closed"
+    self._DROWSY_PERCLOS_THRESHOLD = 0.15  # window share that flags drowsiness
+    self._DROWSY_PERCLOS_RECENCY = 10.  # require closed eyes within the last N seconds
+    # Head nod: sharp downward pitch excursions, the classic falling-asleep nod.
+    self._DROWSY_NOD_PITCH = 0.22  # rad below neutral that marks a nod
+    self._DROWSY_NOD_WINDOW = 90.  # seconds to look back for nods
+    self._DROWSY_NOD_COUNT = 3  # nods within the window that flag drowsiness
+    self._DROWSY_NOD_RECENCY = 30.  # most recent nod must be within the last N seconds
+    self._DROWSY_NOD_REFRACTORY = 2.0  # seconds between counted nods
+    # Head droop: head fallen forward and staying there.
+    self._DROWSY_DROOP_PITCH = 0.30  # rad of sustained downward pitch
+    self._DROWSY_DROOP_TIME = 4.0  # seconds of droop that flag drowsiness
+    # Once drowsiness trips, recovery is suppressed this long, so microsleep
+    # clusters don't reset the escalation the instant eyes reopen.
+    self._DROWSY_LATCH_TIME = 15.
+
     self._POSE_CALIB_MIN_SPEED = 13  # 30 mph
     self._POSE_OFFSET_MIN_COUNT = int(60 / DT_DMON)  # valid data counts before calibration completes, 1min cumulative
     self._POSE_OFFSET_MAX_COUNT = int(360 / DT_DMON)  # stop deweighting new data after 6 min, aka "short term memory"
@@ -158,6 +186,18 @@ class DriverMonitoring:
     self.pose = DriverPose(settings=self.settings)
     self.blink = DriverBlink()
     self.phone_prob = 0.
+
+    # drowsiness (sleep) detection state
+    self.pitch_error_signed = 0.
+    self.eye_closure = 0.
+    self.drowsy_eye_cnt = 0
+    self.perclos_window = deque(maxlen=int(self.settings._DROWSY_PERCLOS_WINDOW / DT_DMON))
+    self.nod_steps = deque()
+    self.prev_pitch_error = None
+    self.droop_cnt = 0
+    self.step_count = 0
+    self.drowsy_latch_cnt = 0
+    self.drowsy_latched = False
 
     self.alert_level = AlertLevel.none
     self.always_on = always_on
@@ -247,6 +287,7 @@ class DriverMonitoring:
                                                        self.settings._PITCH_MIN_OFFSET), self.settings._PITCH_MAX_OFFSET)
       yaw_error = self.pose.yaw - min(max(self.pose.yaw_offsetter.filtered_stat.mean(),
                                                     self.settings._YAW_MIN_OFFSET), self.settings._YAW_MAX_OFFSET)
+    self.pitch_error_signed = pitch_error  # signed (negative = head tilted down), for nod/droop detection
     pitch_error = 0 if pitch_error > 0 else abs(pitch_error) # no positive pitch limit
 
     if yaw_error * self.pose.steer_yaw_offset > 0: # unidirectional
@@ -261,7 +302,68 @@ class DriverMonitoring:
     self.distracted_types['eye'] = bool((self.blink.left + self.blink.right)*0.5 > self.settings._BLINK_THRESHOLD)
     self.distracted_types['phone'] = bool(self.phone_prob > self.settings._PHONE_THRESH)
 
+  def _update_drowsiness(self):
+    # Stronger sleep detection: four drowsiness signals that feed the
+    # 'drowsy' distracted type. Drowsiness requires a confident face pose
+    # estimate, otherwise the eye/pitch signals are unreliable.
+    s = self.settings
+    self.distracted_types['drowsy'] = False
+    if not (self.face_detected and self.pose.low_std):
+      return
+
+    # --- eye closure stream: 0 = open, 1 = fully closed ---
+    self.eye_closure = (self.blink.left + self.blink.right) * 0.5
+    self.perclos_window.append(self.eye_closure >= s._DROWSY_PERCLOS_CLOSED)
+
+    perclos_ready = len(self.perclos_window) >= int(s._DROWSY_PERCLOS_MIN_DATA / DT_DMON)
+    perclos = sum(self.perclos_window) / len(self.perclos_window)
+    recency = int(s._DROWSY_PERCLOS_RECENCY / DT_DMON)
+    recent_closed = any(list(self.perclos_window)[-recency:])
+    drowsy_perclos = perclos_ready and perclos >= s._DROWSY_PERCLOS_THRESHOLD and recent_closed
+
+    # heavy eyelids: sustained partial closure below the full-blink threshold
+    if self.eye_closure >= s._DROWSY_BLINK_THRESHOLD:
+      self.drowsy_eye_cnt += 1
+    else:
+      self.drowsy_eye_cnt = 0
+    heavy_eyelids = self.drowsy_eye_cnt >= int(s._DROWSY_BLINK_TIME / DT_DMON)
+
+    # --- head nod: sharp downward pitch excursions ---
+    window_steps = int(s._DROWSY_NOD_WINDOW / DT_DMON)
+    while len(self.nod_steps) and self.step_count - self.nod_steps[0] > window_steps:
+      self.nod_steps.popleft()
+    refractory_steps = int(s._DROWSY_NOD_REFRACTORY / DT_DMON)
+    recency_steps = int(s._DROWSY_NOD_RECENCY / DT_DMON)
+    last_nod = self.nod_steps[-1] if len(self.nod_steps) else -refractory_steps - 1
+    pitch = self.pitch_error_signed
+    if (pitch < -s._DROWSY_NOD_PITCH and
+        self.prev_pitch_error is not None and self.prev_pitch_error > -s._DROWSY_NOD_PITCH * 0.5 and
+        self.step_count - last_nod > refractory_steps):
+      self.nod_steps.append(self.step_count)
+      last_nod = self.step_count
+    self.prev_pitch_error = pitch
+    nodding = len(self.nod_steps) >= s._DROWSY_NOD_COUNT and self.step_count - last_nod <= recency_steps
+
+    # --- head droop: head fallen forward and staying there ---
+    if pitch < -s._DROWSY_DROOP_PITCH:
+      self.droop_cnt += 1
+    else:
+      self.droop_cnt = 0
+    drooping = self.droop_cnt >= int(s._DROWSY_DROOP_TIME / DT_DMON)
+
+    raw_drowsy = bool(heavy_eyelids or drowsy_perclos or nodding or drooping)
+    self.distracted_types['drowsy'] = raw_drowsy
+
+    # latch: stay suspicious a while after the signal clears, so microsleep
+    # clusters don't reset the escalation the instant eyes reopen
+    if raw_drowsy:
+      self.drowsy_latch_cnt = int(s._DROWSY_LATCH_TIME / DT_DMON)
+    elif self.drowsy_latch_cnt > 0:
+      self.drowsy_latch_cnt -= 1
+    self.drowsy_latched = self.drowsy_latch_cnt > 0
+
   def _update_states(self, driver_state, cal_rpy, car_speed, op_engaged, lowspeed, demo_mode=False, steering_angle_deg=0.):
+    self.step_count += 1
     rhd_pred = driver_state.wheelOnRightProb
     # calibrates only when there's movement and either face detected
     if car_speed > self.settings._WHEELPOS_CALIB_MIN_SPEED and (driver_state.leftDriverData.faceProb > self.settings._FACE_THRESHOLD or
@@ -302,6 +404,7 @@ class DriverMonitoring:
     self.phone_prob = driver_data.phoneProb
 
     self._get_distracted_types()
+    self._update_drowsiness()
     self.driver_distracted = any(self.distracted_types.values()) and driver_data.faceProb > self.settings._FACE_THRESHOLD and self.pose.low_std
     self.driver_distraction_filter.update(self.driver_distracted)
 
@@ -365,7 +468,7 @@ class DriverMonitoring:
     always_on_exemption = always_on_valid and not op_engaged and _reaching_alert_3
 
     if self.awareness > 0 and \
-       ((self.driver_distraction_filter.x < 0.37 and self.face_detected and self.pose.low_std) or lowspeed_exemption):
+       (((self.driver_distraction_filter.x < 0.37 and self.face_detected and self.pose.low_std) and not self.drowsy_latched) or lowspeed_exemption):
       if self.driver_interacting:
         self._reset_awareness()
         return
@@ -385,7 +488,11 @@ class DriverMonitoring:
       # should always be counting if distracted unless at low speed and reaching green
       # also will not be reaching 0 if DM is active when not engaged
       if not (lowspeed_exemption or always_on_exemption):
-        self.awareness = max(self.awareness - self.step_change, -0.1)
+        drain = self.step_change
+        if self.distracted_types['drowsy'] and self.face_detected:
+          # drowsiness escalates faster than generic distraction
+          drain *= self.settings._DROWSY_DRAIN_FACTOR
+        self.awareness = max(self.awareness - drain, -0.1)
 
     if self.awareness <= 0.:
       # terminal alert: disengagement required
@@ -429,6 +536,7 @@ class DriverMonitoring:
     dm.visionPolicyState.distractedTypes.pose = self.distracted_types['pose']
     dm.visionPolicyState.distractedTypes.eye = self.distracted_types['eye']
     dm.visionPolicyState.distractedTypes.phone = self.distracted_types['phone']
+    dm.visionPolicyState.distractedTypes.drowsy = self.drowsy_latched
     dm.visionPolicyState.faceDetected = self.face_detected
     dm.visionPolicyState.pose.pitch = self.pose.pitch
     dm.visionPolicyState.pose.yaw = self.pose.yaw

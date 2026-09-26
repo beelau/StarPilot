@@ -2361,6 +2361,7 @@ struct DriverMonitoringState {
       pose @0: Bool;
       eye @1: Bool;
       phone @2: Bool;
+      drowsy @3: Bool;
     }
 
     struct Pose {
