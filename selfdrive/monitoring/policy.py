@@ -70,7 +70,16 @@ class DRIVER_MONITOR_SETTINGS:
     self._EYE_THRESHOLD = 0.65
     self._SG_THRESHOLD = 0.9
     self._BLINK_THRESHOLD = 0.865
-    self._PHONE_THRESH = 0.5
+    self._PHONE_THRESH = 0.7
+    # --- StarPilot weakened phone detection ---
+    # Delivery drivers glance at the phone for dispatch info; keep the phone
+    # detector but make it less twitchy. Phone use must persist this long
+    # before it counts as distraction at all, so quick glances never register.
+    self._PHONE_MIN_TIME = 2.0
+    # When phone is the *only* distracted type, awareness drains this
+    # fraction as fast (red at ~26s instead of ~13s). Looking away (pose)
+    # or closing eyes on top of phone use still escalates at full speed.
+    self._PHONE_DRAIN_FACTOR = 0.5
     self._POSE_PITCH_THRESHOLD = 0.3133
     self._POSE_PITCH_THRESHOLD_SLACK = 0.3237
     self._POSE_PITCH_THRESHOLD_STRICT = self._POSE_PITCH_THRESHOLD
@@ -186,6 +195,7 @@ class DriverMonitoring:
     self.pose = DriverPose(settings=self.settings)
     self.blink = DriverBlink()
     self.phone_prob = 0.
+    self.phone_cnt = 0  # consecutive steps phone_prob has exceeded _PHONE_THRESH
 
     # drowsiness (sleep) detection state
     self.pitch_error_signed = 0.
@@ -300,7 +310,19 @@ class DriverMonitoring:
 
     self.distracted_types['pose'] = bool((pitch_error > pitch_threshold) or (yaw_error > yaw_threshold))
     self.distracted_types['eye'] = bool((self.blink.left + self.blink.right)*0.5 > self.settings._BLINK_THRESHOLD)
-    self.distracted_types['phone'] = bool(self.phone_prob > self.settings._PHONE_THRESH)
+    # phone must be held persistently before it counts: quick glances at
+    # dispatch info never register as distraction
+    if self.phone_prob > self.settings._PHONE_THRESH:
+      self.phone_cnt += 1
+    else:
+      self.phone_cnt = 0
+    self.distracted_types['phone'] = bool(self.phone_cnt >= int(self.settings._PHONE_MIN_TIME / DT_DMON))
+
+  def _phone_only_distraction(self):
+    # phone is the only thing tripped: no looking away, no eye closure,
+    # no drowsiness signal on top of it
+    dt = self.distracted_types
+    return bool(dt['phone'] and not (dt['pose'] or dt['eye'] or dt['drowsy']))
 
   def _update_drowsiness(self):
     # Stronger sleep detection: four drowsiness signals that feed the
@@ -492,6 +514,9 @@ class DriverMonitoring:
         if self.distracted_types['drowsy'] and self.face_detected:
           # drowsiness escalates faster than generic distraction
           drain *= self.settings._DROWSY_DRAIN_FACTOR
+        elif self._phone_only_distraction():
+          # phone-only glances escalate slower
+          drain *= self.settings._PHONE_DRAIN_FACTOR
         self.awareness = max(self.awareness - drain, -0.1)
 
     if self.awareness <= 0.:

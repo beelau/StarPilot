@@ -45,6 +45,20 @@ def make_msg_pitch(pitch):
   return ds
 
 
+def make_msg_phone(prob):
+  # driver using phone with the given model probability
+  ds = make_msg(True)
+  ds.leftDriverData.phoneProb = prob
+  return ds
+
+
+def make_msg_phone_yaw(prob, yaw):
+  # phone use plus head turned sideways (trips pose, not drowsiness)
+  ds = make_msg_phone(prob)
+  ds.leftDriverData.faceOrientation = [0., yaw, 0.]
+  return ds
+
+
 # driver state from neural net, 10Hz
 msg_NO_FACE_DETECTED = make_msg(False)
 msg_ATTENTIVE = make_msg(True)
@@ -308,3 +322,41 @@ class TestMonitoring:
     assert not d_status.distracted_types['eye']  # 0.85 never trips the stock eye detector
     assert d_status.drowsy_latched
     assert alert_lvls[int(45 / DT_DMON)] == 3  # PERCLOS trips at ~30s, red at ~38s
+
+  # engaged, driver glances at the phone for 1.5s (delivery dispatch check)
+  #  - below the phone persistence time, so it never registers as distraction
+  def test_phone_quick_glance_ignored(self):
+    glance = [make_msg_phone(0.9)] * int(1.5 / DT_DMON) + \
+             [msg_ATTENTIVE] * int((TEST_TIMESPAN - 1.5) / DT_DMON)
+    alert_lvls, d_status = self._run_seq(glance, always_false, always_true, always_false)
+    assert all(a == 0 for a in alert_lvls)
+    assert not d_status.distracted_types['phone']
+
+  # engaged, borderline phone probability held the whole drive
+  #  - below the raised phone threshold, never counts
+  def test_phone_borderline_prob_ignored(self):
+    maybe = [make_msg_phone(0.6)] * int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, d_status = self._run_seq(maybe, always_false, always_true, always_false)
+    assert all(a == 0 for a in alert_lvls)
+    assert not d_status.distracted_types['phone']
+
+  # engaged, driver stares at the phone the whole drive
+  #  - still caught, but phone-only use drains ~2x slower (red ~28s, not ~13s)
+  def test_phone_sustained_use_escalates_slower(self):
+    phone = [make_msg_phone(0.9)] * int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, d_status = self._run_seq(phone, always_false, always_true, always_false)
+    assert d_status.distracted_types['phone']
+    assert alert_lvls[int(8 / DT_DMON)] == 0  # stock would already be orange here
+    assert alert_lvls[int(15 / DT_DMON)] == 1
+    assert alert_lvls[int(30 / DT_DMON)] == 3
+
+  # engaged, phone use while also looking sideways at it
+  #  - pose trips too, so this is not phone-only: full-speed escalation
+  def test_phone_with_pose_escalates_normally(self):
+    phone_pose = [make_msg_phone_yaw(0.9, 0.5)] * int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, d_status = self._run_seq(phone_pose, always_false, always_true, always_false)
+    assert d_status.distracted_types['phone']
+    assert d_status.distracted_types['pose']
+    assert not d_status.distracted_types['drowsy']
+    assert alert_lvls[int(10 / DT_DMON)] == 2
+    assert alert_lvls[int(15 / DT_DMON)] == 3
