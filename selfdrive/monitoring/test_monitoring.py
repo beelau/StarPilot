@@ -340,9 +340,9 @@ class TestMonitoring:
     assert not d_status.distracted_types['phone']
 
   # engaged, borderline phone probability held the whole drive
-  #  - below the raised phone threshold, never counts
+  #  - 0.75 would have counted under the old 0.7 threshold; never counts now
   def test_phone_borderline_prob_ignored(self):
-    maybe = [make_msg_phone(0.6)] * int(TEST_TIMESPAN / DT_DMON)
+    maybe = [make_msg_phone(0.75)] * int(TEST_TIMESPAN / DT_DMON)
     alert_lvls, d_status = self._run_seq(maybe, always_false, always_true, always_false)
     assert all(a == 0 for a in alert_lvls)
     assert not d_status.distracted_types['phone']

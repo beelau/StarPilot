@@ -70,7 +70,7 @@ class DRIVER_MONITOR_SETTINGS:
     self._EYE_THRESHOLD = 0.65
     self._SG_THRESHOLD = 0.9
     self._BLINK_THRESHOLD = 0.865
-    self._PHONE_THRESH = 0.7
+    self._PHONE_THRESH = 0.8
     # --- StarPilot lenient phone detection (default behavior) ---
     # Delivery drivers glance at the phone for dispatch info; keep the phone
     # detector but make it less twitchy. Phone use must persist this long
