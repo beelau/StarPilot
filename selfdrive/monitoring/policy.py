@@ -70,16 +70,25 @@ class DRIVER_MONITOR_SETTINGS:
     self._EYE_THRESHOLD = 0.65
     self._SG_THRESHOLD = 0.9
     self._BLINK_THRESHOLD = 0.865
-    self._PHONE_THRESH = 0.7
-    # --- StarPilot weakened phone detection ---
-    # Delivery drivers glance at the phone for dispatch info; keep the phone
-    # detector but make it less twitchy. Phone use must persist this long
-    # before it counts as distraction at all, so quick glances never register.
-    self._PHONE_MIN_TIME = 2.0
-    # When phone is the *only* distracted type, awareness drains this
-    # fraction as fast (red at ~26s instead of ~13s). Looking away (pose)
-    # or closing eyes on top of phone use still escalates at full speed.
-    self._PHONE_DRAIN_FACTOR = 0.5
+    self._PHONE_THRESH = 0.5
+    # --- StarPilot delivery mode phone detection ---
+    # Delivery drivers glance at the phone for dispatch info. With Delivery
+    # Mode on (Settings toggle or the on-road Delivery button), the phone
+    # detector stays but gets much more lenient: a higher model threshold,
+    # phone use must persist before it counts at all (quick glances never
+    # register), and phone-*only* distraction runs its own slow escalation
+    # ladder: green at 60s, orange at 74s, red at 120s. Phone use combined
+    # with looking away (pose), eye closure, or drowsiness still escalates
+    # at full stock speed.
+    self._PHONE_THRESH_DELIVERY = 0.7
+    self._PHONE_MIN_TIME = 0.
+    self._PHONE_MIN_TIME_DELIVERY = 2.0
+    # When phone is the *only* distracted type and Delivery Mode is off,
+    # this is stock behavior (full-speed drain).
+    self._PHONE_DRAIN_FACTOR = 1.0
+    self._PHONE_DELIVERY_ALERT_1_TIMEOUT = 60.
+    self._PHONE_DELIVERY_ALERT_2_TIMEOUT = 74.
+    self._PHONE_DELIVERY_ALERT_3_TIMEOUT = 120.
     self._POSE_PITCH_THRESHOLD = 0.3133
     self._POSE_PITCH_THRESHOLD_SLACK = 0.3237
     self._POSE_PITCH_THRESHOLD_STRICT = self._POSE_PITCH_THRESHOLD
@@ -211,6 +220,8 @@ class DriverMonitoring:
 
     self.alert_level = AlertLevel.none
     self.always_on = always_on
+    self.params = Params()
+    self.delivery_mode = False  # refreshed from params each step; see run_step
     self.distracted_types = defaultdict(bool)
     self.driver_distracted = False
     self.driver_distraction_filter = FirstOrderFilter(0., self.settings._DISTRACTED_FILTER_TS, DT_DMON)
@@ -310,13 +321,20 @@ class DriverMonitoring:
 
     self.distracted_types['pose'] = bool((pitch_error > pitch_threshold) or (yaw_error > yaw_threshold))
     self.distracted_types['eye'] = bool((self.blink.left + self.blink.right)*0.5 > self.settings._BLINK_THRESHOLD)
-    # phone must be held persistently before it counts: quick glances at
-    # dispatch info never register as distraction
-    if self.phone_prob > self.settings._PHONE_THRESH:
+    # phone must be held persistently before it counts in Delivery Mode:
+    # quick glances at dispatch info never register as distraction
+    if self.delivery_mode:
+      phone_thresh = self.settings._PHONE_THRESH_DELIVERY
+      phone_min_time = self.settings._PHONE_MIN_TIME_DELIVERY
+    else:
+      phone_thresh = self.settings._PHONE_THRESH
+      phone_min_time = self.settings._PHONE_MIN_TIME
+    if self.phone_prob > phone_thresh:
       self.phone_cnt += 1
     else:
       self.phone_cnt = 0
-    self.distracted_types['phone'] = bool(self.phone_cnt >= int(self.settings._PHONE_MIN_TIME / DT_DMON))
+    min_phone_steps = max(1, int(phone_min_time / DT_DMON))
+    self.distracted_types['phone'] = bool(self.phone_cnt >= min_phone_steps)
 
   def _phone_only_distraction(self):
     # phone is the only thing tripped: no looking away, no eye closure,
@@ -484,6 +502,16 @@ class DriverMonitoring:
       return
 
     awareness_prev = self.awareness
+    # Delivery Mode: phone-*only* distraction runs its own slow escalation
+    # ladder (green at 60s, orange at 74s, red at 120s) instead of the stock
+    # 5/8/13s one. Anything on top of phone use (pose, eye, drowsy) keeps
+    # stock timing.
+    self.delivery_phone_slow = bool(self.delivery_mode and self._phone_only_distraction())
+    if self.delivery_phone_slow:
+      s = self.settings
+      self.threshold_alert_1 = 1. - s._PHONE_DELIVERY_ALERT_1_TIMEOUT / s._PHONE_DELIVERY_ALERT_3_TIMEOUT
+      self.threshold_alert_2 = 1. - s._PHONE_DELIVERY_ALERT_2_TIMEOUT / s._PHONE_DELIVERY_ALERT_3_TIMEOUT
+      self.step_change = DT_DMON / s._PHONE_DELIVERY_ALERT_3_TIMEOUT
     _reaching_alert_1 = self.awareness - self.step_change <= self.threshold_alert_1
     _reaching_alert_3 = self.awareness - self.step_change <= 0
     lowspeed_exemption = lowspeed and _reaching_alert_1
@@ -515,7 +543,8 @@ class DriverMonitoring:
           # drowsiness escalates faster than generic distraction
           drain *= self.settings._DROWSY_DRAIN_FACTOR
         elif self._phone_only_distraction():
-          # phone-only glances escalate slower
+          # phone-only drain factor (1.0 = stock speed). In Delivery Mode the
+          # slow 60/74/120s ladder is applied via threshold/step override above.
           drain *= self.settings._PHONE_DRAIN_FACTOR
         self.awareness = max(self.awareness - drain, -0.1)
 
@@ -580,6 +609,9 @@ class DriverMonitoring:
     return dat
 
   def run_step(self, sm, demo=False):
+    # Delivery Mode can be flipped live from the on-road button or Settings;
+    # refresh every step so it takes effect immediately.
+    self.delivery_mode = self.params.get_bool("DeliveryMode")
     if demo:
       car_speed = 30
       enabled = True

@@ -90,8 +90,11 @@ class FakeSubMaster:
 
 
 class TestMonitoring:
-  def _run_seq(self, msgs, interaction, engaged, lowspeed):
+  def _run_seq(self, msgs, interaction, engaged, lowspeed, delivery=False):
     DM = DriverMonitoring()
+    # white-box: run_step() normally refreshes this from the DeliveryMode
+    # param each step; tests drive _update_states/_update_events directly
+    DM.delivery_mode = delivery
     alert_lvls = []
     for idx in range(len(msgs)):
       DM._update_states(msgs[idx], [0, 0, 0], 0, engaged[idx], lowspeed[idx])
@@ -325,30 +328,59 @@ class TestMonitoring:
 
   # engaged, driver glances at the phone for 1.5s (delivery dispatch check)
   #  - below the phone persistence time, so it never registers as distraction
+  #  - Delivery Mode on: the lenient profile
   def test_phone_quick_glance_ignored(self):
     glance = [make_msg_phone(0.9)] * int(1.5 / DT_DMON) + \
              [msg_ATTENTIVE] * int((TEST_TIMESPAN - 1.5) / DT_DMON)
-    alert_lvls, d_status = self._run_seq(glance, always_false, always_true, always_false)
+    alert_lvls, d_status = self._run_seq(glance, always_false, always_true, always_false, delivery=True)
     assert all(a == 0 for a in alert_lvls)
     assert not d_status.distracted_types['phone']
 
   # engaged, borderline phone probability held the whole drive
-  #  - below the raised phone threshold, never counts
+  #  - below the raised phone threshold, never counts (Delivery Mode on)
   def test_phone_borderline_prob_ignored(self):
     maybe = [make_msg_phone(0.6)] * int(TEST_TIMESPAN / DT_DMON)
-    alert_lvls, d_status = self._run_seq(maybe, always_false, always_true, always_false)
+    alert_lvls, d_status = self._run_seq(maybe, always_false, always_true, always_false, delivery=True)
     assert all(a == 0 for a in alert_lvls)
     assert not d_status.distracted_types['phone']
 
-  # engaged, driver stares at the phone the whole drive
-  #  - still caught, but phone-only use drains ~2x slower (red ~28s, not ~13s)
+  # engaged, driver stares at the phone the whole drive (Delivery Mode on)
+  #  - still caught, but phone-only use runs the slow ladder:
+  #    green ~60s, orange ~74s, red ~120s (stock: 5s/8s/13s)
   def test_phone_sustained_use_escalates_slower(self):
-    phone = [make_msg_phone(0.9)] * int(TEST_TIMESPAN / DT_DMON)
-    alert_lvls, d_status = self._run_seq(phone, always_false, always_true, always_false)
+    span = 135
+    phone = [make_msg_phone(0.9)] * int(span / DT_DMON)
+    alert_lvls, d_status = self._run_seq(phone, [False] * len(phone), [True] * len(phone), [False] * len(phone), delivery=True)
     assert d_status.distracted_types['phone']
-    assert alert_lvls[int(8 / DT_DMON)] == 0  # stock would already be orange here
-    assert alert_lvls[int(15 / DT_DMON)] == 1
-    assert alert_lvls[int(30 / DT_DMON)] == 3
+    assert alert_lvls[int(55 / DT_DMON)] == 0  # stock would be red here
+    assert alert_lvls[int(65 / DT_DMON)] == 1
+    assert alert_lvls[int(80 / DT_DMON)] == 2
+    assert alert_lvls[int(115 / DT_DMON)] == 2
+    assert alert_lvls[int(125 / DT_DMON)] == 3
+
+  # engaged, Delivery Mode off: stock phone behavior
+  #  - 0.6 exceeds the stock 0.5 threshold and counts immediately, red ~13s
+  def test_phone_stock_when_delivery_off(self):
+    maybe = [make_msg_phone(0.6)] * int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, d_status = self._run_seq(maybe, always_false, always_true, always_false, delivery=False)
+    assert d_status.distracted_types['phone']
+    assert alert_lvls[int(6 / DT_DMON)] == 1
+    assert alert_lvls[int(10 / DT_DMON)] == 2
+    assert alert_lvls[int(15 / DT_DMON)] == 3
+
+  # engaged, Delivery Mode off: phone use counts immediately and escalates
+  # at stock speed (green ~5s), unlike the 2s persistence + slow ladder
+  def test_phone_short_use_alerts_when_delivery_off(self):
+    n = int(8 / DT_DMON)
+    DM = DriverMonitoring()
+    DM.delivery_mode = False
+    alert_lvls = []
+    for _ in range(n):
+        DM._update_states(make_msg_phone(0.9), [0, 0, 0], 0, True, False)
+        DM._update_events(False, True, False, 0)
+        alert_lvls.append(DM.alert_level)
+    assert DM.distracted_types['phone']
+    assert alert_lvls[int(6 / DT_DMON)] == 1  # delivery mode: still 0 here
 
   # engaged, phone use while also looking sideways at it
   #  - pose trips too, so this is not phone-only: full-speed escalation
@@ -358,5 +390,15 @@ class TestMonitoring:
     assert d_status.distracted_types['phone']
     assert d_status.distracted_types['pose']
     assert not d_status.distracted_types['drowsy']
+    assert alert_lvls[int(10 / DT_DMON)] == 2
+    assert alert_lvls[int(15 / DT_DMON)] == 3
+
+  # engaged, Delivery Mode on but phone use plus looking sideways
+  #  - not phone-only, so the slow ladder does NOT apply: stock speed
+  def test_delivery_phone_with_pose_escalates_normally(self):
+    phone_pose = [make_msg_phone_yaw(0.9, 0.5)] * int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, d_status = self._run_seq(phone_pose, always_false, always_true, always_false, delivery=True)
+    assert d_status.distracted_types['phone']
+    assert d_status.distracted_types['pose']
     assert alert_lvls[int(10 / DT_DMON)] == 2
     assert alert_lvls[int(15 / DT_DMON)] == 3
