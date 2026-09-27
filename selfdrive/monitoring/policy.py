@@ -95,6 +95,11 @@ class DRIVER_MONITOR_SETTINGS:
     self._POSE_YAW_THRESHOLD = 0.4020
     self._POSE_YAW_THRESHOLD_SLACK = 0.5042
     self._POSE_YAW_THRESHOLD_STRICT = self._POSE_YAW_THRESHOLD
+    # Delivery Mode: head-turn (pose) must persist this long before it counts,
+    # so brief glances toward the center dash / dispatch never raise alarms.
+    # Stock behavior counts immediately.
+    self._POSE_MIN_TIME = 0.
+    self._POSE_MIN_TIME_DELIVERY = 3.0
     self._POSE_YAW_MIN_STEER_DEG = 30
     self._POSE_YAW_STEER_FACTOR = 0.15
     self._POSE_YAW_STEER_MAX_OFFSET = 0.3927
@@ -204,7 +209,8 @@ class DriverMonitoring:
     self.pose = DriverPose(settings=self.settings)
     self.blink = DriverBlink()
     self.phone_prob = 0.
-    self.phone_cnt = 0  # consecutive steps phone_prob has exceeded _PHONE_THRESH
+    self.phone_cnt = 0  # consecutive steps phone_prob has exceeded the phone threshold
+    self.pose_cnt = 0  # consecutive steps head pose has exceeded the pose thresholds
 
     # drowsiness (sleep) detection state
     self.pitch_error_signed = 0.
@@ -319,7 +325,19 @@ class DriverMonitoring:
     pitch_threshold = self.settings._POSE_PITCH_THRESHOLD * self.pose.cfactor_pitch if self.pose.calibrated else self.settings._PITCH_NATURAL_THRESHOLD
     yaw_threshold = self.settings._POSE_YAW_THRESHOLD * self.pose.cfactor_yaw
 
-    self.distracted_types['pose'] = bool((pitch_error > pitch_threshold) or (yaw_error > yaw_threshold))
+    # pose must persist before it counts in Delivery Mode: brief glances
+    # toward the center dash never register as distraction
+    pose_tripped = bool((pitch_error > pitch_threshold) or (yaw_error > yaw_threshold))
+    if self.delivery_mode:
+      pose_min_time = self.settings._POSE_MIN_TIME_DELIVERY
+    else:
+      pose_min_time = self.settings._POSE_MIN_TIME
+    if pose_tripped:
+      self.pose_cnt += 1
+    else:
+      self.pose_cnt = 0
+    min_pose_steps = max(1, int(pose_min_time / DT_DMON))
+    self.distracted_types['pose'] = bool(self.pose_cnt >= min_pose_steps)
     self.distracted_types['eye'] = bool((self.blink.left + self.blink.right)*0.5 > self.settings._BLINK_THRESHOLD)
     # phone must be held persistently before it counts in Delivery Mode:
     # quick glances at dispatch info never register as distraction

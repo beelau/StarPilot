@@ -28,7 +28,7 @@ DESCRIPTIONS = {
     "without a turn signal activated while driving over 31 mph (50 km/h)."
   ),
   "AlwaysOnDM": tr_noop("Enable driver monitoring even when openpilot is not engaged."),
-  "DeliveryMode": tr_noop("Lenient phone detection for delivery driving: quick glances at dispatch never count, and phone-only distraction takes 60s to reach green and 120s to reach red. Phone use while looking away still alerts at full speed."),
+  "DeliveryMode": tr_noop("Lenient driver monitoring for delivery driving: quick phone glances never count, phone-only distraction takes 60s to reach green and 120s to reach red, and brief head turns toward the center dash are ignored. Sustained looking away still alerts at full speed."),
   'RecordFront': tr_noop("Upload data from the driver facing camera and help improve the driver monitoring algorithm."),
   "IsRHD": tr_noop("Use right-hand-drive driver monitoring. This follows the auto-detected side until changed manually."),
   "IsMetric": tr_noop("Display speed in km/h instead of mph."),

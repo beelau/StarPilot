@@ -59,6 +59,13 @@ def make_msg_phone_yaw(prob, yaw):
   return ds
 
 
+def make_msg_yaw(yaw):
+  # head turned sideways (trips the stock pose detector), no phone
+  ds = make_msg(True)
+  ds.leftDriverData.faceOrientation = [0., yaw, 0.]
+  return ds
+
+
 # driver state from neural net, 10Hz
 msg_NO_FACE_DETECTED = make_msg(False)
 msg_ATTENTIVE = make_msg(True)
@@ -394,11 +401,38 @@ class TestMonitoring:
     assert alert_lvls[int(15 / DT_DMON)] == 3
 
   # engaged, Delivery Mode on but phone use plus looking sideways
-  #  - not phone-only, so the slow ladder does NOT apply: stock speed
+  #  - pose trips after its 3s persistence, then stock-speed escalation
+  #    (green ~8s, orange ~11s, red ~16s)
   def test_delivery_phone_with_pose_escalates_normally(self):
     phone_pose = [make_msg_phone_yaw(0.9, 0.5)] * int(TEST_TIMESPAN / DT_DMON)
     alert_lvls, d_status = self._run_seq(phone_pose, always_false, always_true, always_false, delivery=True)
     assert d_status.distracted_types['phone']
     assert d_status.distracted_types['pose']
-    assert alert_lvls[int(10 / DT_DMON)] == 2
-    assert alert_lvls[int(15 / DT_DMON)] == 3
+    assert alert_lvls[int(9 / DT_DMON)] == 1
+    assert alert_lvls[int(12 / DT_DMON)] == 2
+    assert alert_lvls[int(17 / DT_DMON)] == 3
+
+  # engaged, Delivery Mode on: brief glance toward the center dash (head
+  # turned ~29deg, trips the stock pose detector) raises no alarms at all
+  def test_delivery_dash_glance_no_alarm(self):
+    glance = [make_msg_yaw(0.5)] * int(2.5 / DT_DMON) + \
+             [msg_ATTENTIVE] * int((TEST_TIMESPAN - 2.5) / DT_DMON)
+    alert_lvls, d_status = self._run_seq(glance, always_false, always_true, always_false, delivery=True)
+    assert all(a == 0 for a in alert_lvls)
+    assert not d_status.distracted_types['pose']
+
+  # engaged, Delivery Mode on: staring at the dash for many seconds still
+  # alerts (pose trips after the 3s persistence, then stock escalation)
+  def test_delivery_sustained_look_away_still_alerts(self):
+    look = [make_msg_yaw(0.5)] * int(20 / DT_DMON)
+    alert_lvls, d_status = self._run_seq(look, [False] * len(look), [True] * len(look), [False] * len(look), delivery=True)
+    assert d_status.distracted_types['pose']
+    assert alert_lvls[int(4 / DT_DMON)] == 0  # stock would be green here
+    assert alert_lvls[int(12 / DT_DMON)] >= 1
+
+  # engaged, Delivery Mode off: the same head turn counts immediately (stock)
+  def test_pose_stock_when_delivery_off(self):
+    look = [make_msg_yaw(0.5)] * int(20 / DT_DMON)
+    alert_lvls, d_status = self._run_seq(look, [False] * len(look), [True] * len(look), [False] * len(look), delivery=False)
+    assert d_status.distracted_types['pose']
+    assert alert_lvls[int(6 / DT_DMON)] == 1
