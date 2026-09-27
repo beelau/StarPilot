@@ -9,7 +9,7 @@ from openpilot.selfdrive.ui.onroad.starpilot.rivian_lateral_mode import rivian_l
 from openpilot.selfdrive.ui.onroad.starpilot.widget_layout_manager import WidgetLayoutManager
 from openpilot.selfdrive.ui.onroad.starpilot.widgets import (
   SetSpeedWidget, SpeedLimitWidget, PedalIconsWidget,
-  AetherGaugeWidget, PersonalityButtonWidget, DeliveryButtonWidget, DriverMonitorWidget,
+  AetherGaugeWidget, PersonalityButtonWidget, DriverMonitorWidget,
   SteeringWheelWidget, StoppedTimerWidget, ModelSourceWidget
 )
 from openpilot.selfdrive.ui.onroad.starpilot.stopping_point import render_stopping_point
@@ -69,7 +69,6 @@ class StarPilotOnroadView(AugmentedRoadView):
     self._steering_wheel_widget = SteeringWheelWidget(self._hud_renderer._exp_button)
     self._pedals_widget = PedalIconsWidget()
     self._personality_button_widget = PersonalityButtonWidget()
-    self._delivery_button_widget = DeliveryButtonWidget()
     self._driver_monitor_widget = DriverMonitorWidget(self.driver_state_renderer)
     self._model_source_widget = ModelSourceWidget()
     self._stopped_timer_widget = StoppedTimerWidget(self.is_in_reverse)
@@ -82,7 +81,6 @@ class StarPilotOnroadView(AugmentedRoadView):
     self.layout_manager.register_widget("right", self._pedals_widget)
     self.layout_manager.register_widget("right_center", self._model_source_widget)
     self.layout_manager.register_widget("bottom", self._personality_button_widget)
-    self.layout_manager.register_widget("bottom", self._delivery_button_widget)
     self.layout_manager.register_widget("bottom", self._driver_monitor_widget)
 
     # Register as child widgets for click propagation
@@ -92,7 +90,6 @@ class StarPilotOnroadView(AugmentedRoadView):
     self._child(self._steering_wheel_widget)
     self._child(self._pedals_widget)
     self._child(self._personality_button_widget)
-    self._child(self._delivery_button_widget)
     self._child(self._driver_monitor_widget)
     self._child(self._model_source_widget)
     self._child(self._stopped_timer_widget)

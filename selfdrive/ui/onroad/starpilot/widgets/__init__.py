@@ -4,7 +4,6 @@ from openpilot.selfdrive.ui.onroad.starpilot.widgets.speed_limit import SpeedLim
 from openpilot.selfdrive.ui.onroad.starpilot.widgets.pedal_icons import PedalIconsWidget
 from openpilot.selfdrive.ui.onroad.starpilot.widgets.aethergauge import AetherGaugeWidget
 from openpilot.selfdrive.ui.onroad.starpilot.widgets.personality_button import PersonalityButtonWidget
-from openpilot.selfdrive.ui.onroad.starpilot.widgets.delivery_button import DeliveryButtonWidget
 from openpilot.selfdrive.ui.onroad.starpilot.widgets.driver_monitor import DriverMonitorWidget
 from openpilot.selfdrive.ui.onroad.starpilot.widgets.steering_wheel import SteeringWheelWidget
 from openpilot.selfdrive.ui.onroad.starpilot.widgets.stopped_timer import StoppedTimerWidget
@@ -17,7 +16,6 @@ __all__ = [
   "PedalIconsWidget",
   "AetherGaugeWidget",
   "PersonalityButtonWidget",
-  "DeliveryButtonWidget",
   "DriverMonitorWidget",
   "SteeringWheelWidget",
   "StoppedTimerWidget",

@@ -97,11 +97,8 @@ class FakeSubMaster:
 
 
 class TestMonitoring:
-  def _run_seq(self, msgs, interaction, engaged, lowspeed, delivery=False):
+  def _run_seq(self, msgs, interaction, engaged, lowspeed):
     DM = DriverMonitoring()
-    # white-box: run_step() normally refreshes this from the DeliveryMode
-    # param each step; tests drive _update_states/_update_events directly
-    DM.delivery_mode = delivery
     alert_lvls = []
     for idx in range(len(msgs)):
       DM._update_states(msgs[idx], [0, 0, 0], 0, engaged[idx], lowspeed[idx])
@@ -335,29 +332,28 @@ class TestMonitoring:
 
   # engaged, driver glances at the phone for 1.5s (delivery dispatch check)
   #  - below the phone persistence time, so it never registers as distraction
-  #  - Delivery Mode on: the lenient profile
   def test_phone_quick_glance_ignored(self):
     glance = [make_msg_phone(0.9)] * int(1.5 / DT_DMON) + \
              [msg_ATTENTIVE] * int((TEST_TIMESPAN - 1.5) / DT_DMON)
-    alert_lvls, d_status = self._run_seq(glance, always_false, always_true, always_false, delivery=True)
+    alert_lvls, d_status = self._run_seq(glance, always_false, always_true, always_false)
     assert all(a == 0 for a in alert_lvls)
     assert not d_status.distracted_types['phone']
 
   # engaged, borderline phone probability held the whole drive
-  #  - below the raised phone threshold, never counts (Delivery Mode on)
+  #  - below the raised phone threshold, never counts
   def test_phone_borderline_prob_ignored(self):
     maybe = [make_msg_phone(0.6)] * int(TEST_TIMESPAN / DT_DMON)
-    alert_lvls, d_status = self._run_seq(maybe, always_false, always_true, always_false, delivery=True)
+    alert_lvls, d_status = self._run_seq(maybe, always_false, always_true, always_false)
     assert all(a == 0 for a in alert_lvls)
     assert not d_status.distracted_types['phone']
 
-  # engaged, driver stares at the phone the whole drive (Delivery Mode on)
+  # engaged, driver stares at the phone the whole drive
   #  - still caught, but phone-only use runs the slow ladder:
   #    green ~60s, orange ~74s, red ~120s (stock: 5s/8s/13s)
   def test_phone_sustained_use_escalates_slower(self):
     span = 135
     phone = [make_msg_phone(0.9)] * int(span / DT_DMON)
-    alert_lvls, d_status = self._run_seq(phone, [False] * len(phone), [True] * len(phone), [False] * len(phone), delivery=True)
+    alert_lvls, d_status = self._run_seq(phone, [False] * len(phone), [True] * len(phone), [False] * len(phone))
     assert d_status.distracted_types['phone']
     assert alert_lvls[int(55 / DT_DMON)] == 0  # stock would be red here
     assert alert_lvls[int(65 / DT_DMON)] == 1
@@ -365,74 +361,33 @@ class TestMonitoring:
     assert alert_lvls[int(115 / DT_DMON)] == 2
     assert alert_lvls[int(125 / DT_DMON)] == 3
 
-  # engaged, Delivery Mode off: stock phone behavior
-  #  - 0.6 exceeds the stock 0.5 threshold and counts immediately, red ~13s
-  def test_phone_stock_when_delivery_off(self):
-    maybe = [make_msg_phone(0.6)] * int(TEST_TIMESPAN / DT_DMON)
-    alert_lvls, d_status = self._run_seq(maybe, always_false, always_true, always_false, delivery=False)
-    assert d_status.distracted_types['phone']
-    assert alert_lvls[int(6 / DT_DMON)] == 1
-    assert alert_lvls[int(10 / DT_DMON)] == 2
-    assert alert_lvls[int(15 / DT_DMON)] == 3
-
-  # engaged, Delivery Mode off: phone use counts immediately and escalates
-  # at stock speed (green ~5s), unlike the 2s persistence + slow ladder
-  def test_phone_short_use_alerts_when_delivery_off(self):
-    n = int(8 / DT_DMON)
-    DM = DriverMonitoring()
-    DM.delivery_mode = False
-    alert_lvls = []
-    for _ in range(n):
-        DM._update_states(make_msg_phone(0.9), [0, 0, 0], 0, True, False)
-        DM._update_events(False, True, False, 0)
-        alert_lvls.append(DM.alert_level)
-    assert DM.distracted_types['phone']
-    assert alert_lvls[int(6 / DT_DMON)] == 1  # delivery mode: still 0 here
-
   # engaged, phone use while also looking sideways at it
-  #  - pose trips too, so this is not phone-only: full-speed escalation
+  #  - pose trips after its 3s persistence, then stock-speed escalation
+  #    (green ~8s, orange ~11s, red ~16s)
   def test_phone_with_pose_escalates_normally(self):
     phone_pose = [make_msg_phone_yaw(0.9, 0.5)] * int(TEST_TIMESPAN / DT_DMON)
     alert_lvls, d_status = self._run_seq(phone_pose, always_false, always_true, always_false)
     assert d_status.distracted_types['phone']
     assert d_status.distracted_types['pose']
     assert not d_status.distracted_types['drowsy']
-    assert alert_lvls[int(10 / DT_DMON)] == 2
-    assert alert_lvls[int(15 / DT_DMON)] == 3
-
-  # engaged, Delivery Mode on but phone use plus looking sideways
-  #  - pose trips after its 3s persistence, then stock-speed escalation
-  #    (green ~8s, orange ~11s, red ~16s)
-  def test_delivery_phone_with_pose_escalates_normally(self):
-    phone_pose = [make_msg_phone_yaw(0.9, 0.5)] * int(TEST_TIMESPAN / DT_DMON)
-    alert_lvls, d_status = self._run_seq(phone_pose, always_false, always_true, always_false, delivery=True)
-    assert d_status.distracted_types['phone']
-    assert d_status.distracted_types['pose']
     assert alert_lvls[int(9 / DT_DMON)] == 1
     assert alert_lvls[int(12 / DT_DMON)] == 2
     assert alert_lvls[int(17 / DT_DMON)] == 3
 
-  # engaged, Delivery Mode on: brief glance toward the center dash (head
-  # turned ~29deg, trips the stock pose detector) raises no alarms at all
-  def test_delivery_dash_glance_no_alarm(self):
+  # engaged: brief glance toward the center dash (head turned ~29deg)
+  # raises no alarms at all
+  def test_dash_glance_no_alarm(self):
     glance = [make_msg_yaw(0.5)] * int(2.5 / DT_DMON) + \
              [msg_ATTENTIVE] * int((TEST_TIMESPAN - 2.5) / DT_DMON)
-    alert_lvls, d_status = self._run_seq(glance, always_false, always_true, always_false, delivery=True)
+    alert_lvls, d_status = self._run_seq(glance, always_false, always_true, always_false)
     assert all(a == 0 for a in alert_lvls)
     assert not d_status.distracted_types['pose']
 
-  # engaged, Delivery Mode on: staring at the dash for many seconds still
-  # alerts (pose trips after the 3s persistence, then stock escalation)
-  def test_delivery_sustained_look_away_still_alerts(self):
+  # engaged: staring at the dash for many seconds still alerts
+  # (pose trips after the 3s persistence, then stock escalation)
+  def test_sustained_look_away_still_alerts(self):
     look = [make_msg_yaw(0.5)] * int(20 / DT_DMON)
-    alert_lvls, d_status = self._run_seq(look, [False] * len(look), [True] * len(look), [False] * len(look), delivery=True)
+    alert_lvls, d_status = self._run_seq(look, [False] * len(look), [True] * len(look), [False] * len(look))
     assert d_status.distracted_types['pose']
-    assert alert_lvls[int(4 / DT_DMON)] == 0  # stock would be green here
+    assert alert_lvls[int(4 / DT_DMON)] == 0
     assert alert_lvls[int(12 / DT_DMON)] >= 1
-
-  # engaged, Delivery Mode off: the same head turn counts immediately (stock)
-  def test_pose_stock_when_delivery_off(self):
-    look = [make_msg_yaw(0.5)] * int(20 / DT_DMON)
-    alert_lvls, d_status = self._run_seq(look, [False] * len(look), [True] * len(look), [False] * len(look), delivery=False)
-    assert d_status.distracted_types['pose']
-    assert alert_lvls[int(6 / DT_DMON)] == 1
