@@ -153,7 +153,7 @@ FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 LEAD_T_IDXS_MODEL = np.asarray(ModelConstants.LEAD_T_IDXS, dtype=np.float64)
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 3.0
+STOP_DISTANCE = 6.0
 
 
 def build_model_lead_trajectory(model_lead, radar_lead, v_ego):
@@ -266,13 +266,7 @@ def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
 def get_safe_obstacle_distance(v_ego, t_follow):
-  # In slow traffic humans close the gap; compress the time-gap term at low
-  # speeds so the car tucks in like a driver would when traffic drastically
-  # slows or stops. The braking-distance term is untouched, so the safety
-  # margin stays intact, and above ~20 m/s (45 mph) the gap is exactly as
-  # before: normal moving follow distance is unchanged.
-  slow_factor = min(1.0, max(0.4, v_ego / 20.0))
-  return (v_ego**2) / (2 * COMFORT_BRAKE) + slow_factor * t_follow * v_ego + STOP_DISTANCE
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
 
 def desired_follow_distance(v_ego, v_lead, t_follow=None):
   if t_follow is None:

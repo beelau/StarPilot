@@ -132,15 +132,11 @@ def _catchup_cap(lead, v_ego: float, t_follow: float, *, source: str, tracking: 
   cap = float(np.interp(gap_factor, [0.0, 1.0], [near, float(edge)]))
   allowance = float(np.clip(gap_error / 4.0, 0.0, 1.0))
   if v_ego >= 12.0:
-    allowance *= 0.55
-  # Ease off the catch-up as soon as the lead starts braking, at any speed.
-  # In slow traffic this stops the car accelerating toward a slowing lead,
-  # so it slows earlier instead of braking hard later.
-  allowance *= float(np.clip((0.35 - brake) / 0.35, 0.0, 1.0))
+    allowance *= 0.55 * float(np.clip((0.35 - brake) / 0.35, 0.0, 1.0))
   cap += allowance * 0.55
   entry = float(np.clip((v_ego - 8.0) / 4.0, 0.0, 1.0))
-  cap = float(np.interp(entry, [0.0, 1.0], [0.7, cap]))
-  return min(0.7, cap)
+  cap = float(np.interp(entry, [0.0, 1.0], [1.5, cap]))
+  return min(1.5, cap)
 
 
 def _matched_brake_floor(lead, v_ego: float, t_follow: float) -> float | None:
