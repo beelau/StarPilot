@@ -101,3 +101,23 @@ def test_follow_policy_bypasses_post_departure_handoff():
   result = run(lead(d_rel=46.0, v_lead=22.0), v_ego=20.0, previous=0.0, raw=0.6, post_departure=True)
   assert result.target == pytest.approx(0.6)
   assert result.accel_cap is None
+
+
+def test_follow_policy_caps_slow_traffic_catchup_gently():
+  # In slow traffic the car eases up to speed instead of rushing: the
+  # catch-up accel cap stays gentle (<= 0.7) in the 8-12 m/s zone rather
+  # than ballooning toward 1.5.
+  result = run(lead(d_rel=8.0, v_lead=11.0), v_ego=10.0, raw=1.2)
+  assert result.accel_cap is not None
+  assert result.accel_cap <= 0.7
+  assert result.target <= 0.7
+
+
+def test_follow_policy_eases_off_when_lead_brakes_at_low_speed():
+  # Lead-brake moderation used to apply only above 12 m/s. In slow traffic
+  # the car now stops pushing toward a braking lead, so it slows earlier
+  # instead of braking hard later.
+  no_brake = run(lead(d_rel=8.0, v_lead=11.0, a_lead=0.0), v_ego=10.0, raw=1.2)
+  braking = run(lead(d_rel=8.0, v_lead=11.0, a_lead=-1.0), v_ego=10.0, raw=1.2)
+  assert braking.accel_cap is not None
+  assert braking.accel_cap < no_brake.accel_cap
