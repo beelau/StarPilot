@@ -79,12 +79,12 @@ class DRIVER_MONITOR_SETTINGS:
     # glances never register.
     self._PHONE_MIN_TIME = 2.0
     # When phone is the *only* distracted type, it runs its own slow
-    # escalation ladder: green at 60s, orange at 74s, red at 120s
+    # escalation ladder: green at 120s, orange at 148s, red at 240s
     # (stock: 5s/8s/13s). Phone use combined with looking away (pose),
     # eye closure, or drowsiness still escalates at full stock speed.
-    self._PHONE_SLOW_ALERT_1_TIMEOUT = 60.
-    self._PHONE_SLOW_ALERT_2_TIMEOUT = 74.
-    self._PHONE_SLOW_ALERT_3_TIMEOUT = 120.
+    self._PHONE_SLOW_ALERT_1_TIMEOUT = 120.
+    self._PHONE_SLOW_ALERT_2_TIMEOUT = 148.
+    self._PHONE_SLOW_ALERT_3_TIMEOUT = 240.
     self._POSE_PITCH_THRESHOLD = 0.3133
     self._POSE_PITCH_THRESHOLD_SLACK = 0.3237
     self._POSE_PITCH_THRESHOLD_STRICT = self._POSE_PITCH_THRESHOLD
@@ -512,7 +512,7 @@ class DriverMonitoring:
 
     awareness_prev = self.awareness
     # Phone-*only* distraction runs its own slow escalation ladder
-    # (green at 60s, orange at 74s, red at 120s) instead of the stock
+    # (green at 120s, orange at 148s, red at 240s) instead of the stock
     # 5/8/13s one. Anything on top of phone use (pose, eye, drowsy) keeps
     # stock timing.
     self.phone_only_slow = bool(self._phone_only_distraction())

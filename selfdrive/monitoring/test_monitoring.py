@@ -357,17 +357,17 @@ class TestMonitoring:
 
   # engaged, driver stares at the phone the whole drive
   #  - still caught, but phone-only use runs the slow ladder:
-  #    green ~60s, orange ~74s, red ~120s (stock: 5s/8s/13s)
+  #    green ~120s, orange ~148s, red ~240s (stock: 5s/8s/13s)
   def test_phone_sustained_use_escalates_slower(self):
-    span = 135
+    span = 260
     phone = [make_msg_phone(0.9)] * int(span / DT_DMON)
     alert_lvls, d_status = self._run_seq(phone, [False] * len(phone), [True] * len(phone), [False] * len(phone))
     assert d_status.distracted_types['phone']
-    assert alert_lvls[int(55 / DT_DMON)] == 0  # stock would be red here
-    assert alert_lvls[int(65 / DT_DMON)] == 1
-    assert alert_lvls[int(80 / DT_DMON)] == 2
-    assert alert_lvls[int(115 / DT_DMON)] == 2
-    assert alert_lvls[int(125 / DT_DMON)] == 3
+    assert alert_lvls[int(115 / DT_DMON)] == 0  # stock would be red here
+    assert alert_lvls[int(125 / DT_DMON)] == 1
+    assert alert_lvls[int(160 / DT_DMON)] == 2
+    assert alert_lvls[int(230 / DT_DMON)] == 2
+    assert alert_lvls[int(245 / DT_DMON)] == 3
 
   # engaged, phone use while also looking sideways at it
   #  - pose trips after its 3s persistence, then stock-speed escalation
@@ -386,7 +386,7 @@ class TestMonitoring:
   #  - downward head pitch must not false-trigger the pitch-based drowsiness
   #    signals (droop/nod): drowsy stays clear, phone-only slow ladder applies
   def test_phone_head_down_no_false_drowsy(self):
-    span = 135
+    span = 260
     phone_down = [make_msg_phone_pitch(0.9, -0.35)] * int(span / DT_DMON)
     alert_lvls, d_status = self._run_seq(phone_down, [False] * len(phone_down), [True] * len(phone_down), [False] * len(phone_down))
     assert d_status.distracted_types['phone']
@@ -396,8 +396,9 @@ class TestMonitoring:
     assert d_status.droop_cnt == 0
     assert len(d_status.nod_steps) == 0
     # phone-only slow ladder, same as plain sustained phone use
-    assert alert_lvls[int(65 / DT_DMON)] == 1
-    assert alert_lvls[int(125 / DT_DMON)] == 3
+    assert alert_lvls[int(115 / DT_DMON)] == 0
+    assert alert_lvls[int(125 / DT_DMON)] == 1
+    assert alert_lvls[int(245 / DT_DMON)] == 3
 
   # engaged, driver holds the phone AND has heavy eyelids (genuinely drowsy)
   #  - eye-based drowsiness signals still fire with the phone active, so the
