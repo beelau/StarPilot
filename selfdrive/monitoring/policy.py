@@ -70,11 +70,13 @@ class DRIVER_MONITOR_SETTINGS:
     self._EYE_THRESHOLD = 0.65
     self._SG_THRESHOLD = 0.9
     self._BLINK_THRESHOLD = 0.865
-    self._PHONE_THRESH = 0.8
+    self._PHONE_THRESH = 0.5
     # --- StarPilot lenient phone detection (default behavior) ---
-    # Delivery drivers glance at the phone for dispatch info; keep the phone
-    # detector but make it less twitchy. Phone use must persist this long
-    # before it counts as distraction at all, so quick glances never register.
+    # Delivery drivers glance at the phone for dispatch info. The confidence
+    # threshold stays at the stock 0.5; leniency comes from the persistence
+    # requirement and the slow phone-only ladder instead. Phone use must
+    # persist this long before it counts as distraction at all, so quick
+    # glances never register.
     self._PHONE_MIN_TIME = 2.0
     # When phone is the *only* distracted type, it runs its own slow
     # escalation ladder: green at 60s, orange at 74s, red at 120s
