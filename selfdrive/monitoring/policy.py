@@ -367,6 +367,14 @@ class DriverMonitoring:
       self.drowsy_eye_cnt = 0
     heavy_eyelids = self.drowsy_eye_cnt >= int(s._DROWSY_BLINK_TIME / DT_DMON)
 
+    # Pitch-based signals (nod, droop) are confounded when the driver is
+    # looking down at a phone, so they neither accumulate nor fire while
+    # phone use is confidently detected. Eye-based signals (heavy eyelids,
+    # PERCLOS) still apply: a genuinely drowsy driver holding a phone is
+    # still caught. distracted_types['phone'] is fresh here: _update_states
+    # runs _get_distracted_types before _update_drowsiness.
+    phone_active = bool(self.distracted_types.get('phone', False))
+
     # --- head nod: sharp downward pitch excursions ---
     window_steps = int(s._DROWSY_NOD_WINDOW / DT_DMON)
     while len(self.nod_steps) and self.step_count - self.nod_steps[0] > window_steps:
@@ -375,16 +383,16 @@ class DriverMonitoring:
     recency_steps = int(s._DROWSY_NOD_RECENCY / DT_DMON)
     last_nod = self.nod_steps[-1] if len(self.nod_steps) else -refractory_steps - 1
     pitch = self.pitch_error_signed
-    if (pitch < -s._DROWSY_NOD_PITCH and
+    if (not phone_active and pitch < -s._DROWSY_NOD_PITCH and
         self.prev_pitch_error is not None and self.prev_pitch_error > -s._DROWSY_NOD_PITCH * 0.5 and
         self.step_count - last_nod > refractory_steps):
       self.nod_steps.append(self.step_count)
       last_nod = self.step_count
     self.prev_pitch_error = pitch
-    nodding = len(self.nod_steps) >= s._DROWSY_NOD_COUNT and self.step_count - last_nod <= recency_steps
+    nodding = (not phone_active) and len(self.nod_steps) >= s._DROWSY_NOD_COUNT and self.step_count - last_nod <= recency_steps
 
     # --- head droop: head fallen forward and staying there ---
-    if pitch < -s._DROWSY_DROOP_PITCH:
+    if pitch < -s._DROWSY_DROOP_PITCH and not phone_active:
       self.droop_cnt += 1
     else:
       self.droop_cnt = 0

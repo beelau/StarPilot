@@ -59,6 +59,14 @@ def make_msg_phone_yaw(prob, yaw):
   return ds
 
 
+def make_msg_phone_pitch(prob, pitch):
+  # phone use plus head tilted down (the delivery dispatch glance:
+  # must not false-trigger pitch-based drowsiness signals)
+  ds = make_msg_phone(prob)
+  ds.leftDriverData.faceOrientation = [pitch, 0., 0.]
+  return ds
+
+
 def make_msg_yaw(yaw):
   # head turned sideways (trips the stock pose detector), no phone
   ds = make_msg(True)
@@ -373,6 +381,37 @@ class TestMonitoring:
     assert alert_lvls[int(9 / DT_DMON)] == 1
     assert alert_lvls[int(12 / DT_DMON)] == 2
     assert alert_lvls[int(17 / DT_DMON)] == 3
+
+  # engaged, driver looks down at the phone the whole drive (dispatch glance)
+  #  - downward head pitch must not false-trigger the pitch-based drowsiness
+  #    signals (droop/nod): drowsy stays clear, phone-only slow ladder applies
+  def test_phone_head_down_no_false_drowsy(self):
+    span = 135
+    phone_down = [make_msg_phone_pitch(0.9, -0.35)] * int(span / DT_DMON)
+    alert_lvls, d_status = self._run_seq(phone_down, [False] * len(phone_down), [True] * len(phone_down), [False] * len(phone_down))
+    assert d_status.distracted_types['phone']
+    assert not d_status.distracted_types['pose']  # -0.35 stays below the stock pose threshold
+    assert not d_status.distracted_types['drowsy']
+    assert not d_status.drowsy_latched
+    assert d_status.droop_cnt == 0
+    assert len(d_status.nod_steps) == 0
+    # phone-only slow ladder, same as plain sustained phone use
+    assert alert_lvls[int(65 / DT_DMON)] == 1
+    assert alert_lvls[int(125 / DT_DMON)] == 3
+
+  # engaged, driver holds the phone AND has heavy eyelids (genuinely drowsy)
+  #  - eye-based drowsiness signals still fire with the phone active, so the
+  #    safety fast path is preserved
+  def test_phone_with_heavy_eyelids_still_drowsy(self):
+    ds = make_msg_phone_pitch(0.9, -0.35)
+    ds.leftDriverData.leftBlinkProb = 0.6
+    ds.leftDriverData.rightBlinkProb = 0.6
+    phone_sleepy = [ds] * int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, d_status = self._run_seq(phone_sleepy, always_false, always_true, always_false)
+    assert d_status.distracted_types['phone']
+    assert d_status.distracted_types['drowsy']
+    assert d_status.drowsy_latched
+    assert alert_lvls[int(11 / DT_DMON)] == 3  # drowsy fast path, not the phone slow ladder
 
   # engaged: brief glance toward the center dash (head turned ~29deg)
   # raises no alarms at all
