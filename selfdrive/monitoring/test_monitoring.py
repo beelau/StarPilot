@@ -414,6 +414,25 @@ class TestMonitoring:
     assert d_status.drowsy_latched
     assert alert_lvls[int(11 / DT_DMON)] == 3  # drowsy fast path, not the phone slow ladder
 
+  # engaged: phone-only episode ends -> stock alert timing must be restored,
+  # so a later non-phone distraction escalates at full speed again
+  def test_phone_thresholds_restore_after_phone_only_ends(self):
+    dm = DriverMonitoring()
+    n = int(10 / DT_DMON)
+    for _ in range(n):
+      dm._update_states(make_msg_phone(0.9), [0, 0, 0], 0, True, False)
+      dm._update_events(False, True, False, 0)
+    assert dm.distracted_types['phone']
+    assert dm._phone_thresholds_active
+    assert dm.step_change == DT_DMON / dm_settings._PHONE_SLOW_ALERT_3_TIMEOUT
+
+    for _ in range(n):
+      dm._update_states(msg_ATTENTIVE, [0, 0, 0], 0, True, False)
+      dm._update_events(False, True, False, 0)
+    assert not dm._phone_thresholds_active
+    assert not dm.phone_only_slow
+    assert dm.step_change == DT_DMON / dm_settings._VISION_POLICY_ALERT_3_TIMEOUT
+
   # engaged: brief glance toward the center dash (head turned ~29deg)
   # raises no alarms at all
   def test_dash_glance_no_alarm(self):

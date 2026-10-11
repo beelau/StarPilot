@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import time
+
 from opendbc.car import structs
 from opendbc.car.chrysler.values import pacifica_hybrid_aol_requires_set_press
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR, HyundaiFlags
@@ -34,6 +36,18 @@ HYUNDAI_MAIN_CRUISE_AOL_CONFIRM_TIMEOUT_FRAMES = 100
 AOL_NON_BLOCKING_IMMEDIATE_DISABLE_ALERTS = {
   f"speedTooLow/{ET.IMMEDIATE_DISABLE}",
 }
+
+# Automatic traffic-mode detection. Highway: how far the car is held below what
+# the road allows, as a ratio of the reference speed (min of set speed and map
+# speed limit). Street: repeated standstill-with-lead episodes (stop-and-go).
+AUTO_TRAFFIC_HIGHWAY_MIN_REF_MS = 24.6  # 55 mph; detector only arms at highway speeds
+AUTO_TRAFFIC_JAM_SEVERITY = 0.5
+AUTO_TRAFFIC_CLEAR_SEVERITY = 0.25
+AUTO_TRAFFIC_JAM_CONFIRM_TIME = 10.0
+AUTO_TRAFFIC_CLEAR_CONFIRM_TIME = 30.0
+AUTO_TRAFFIC_STREET_EPISODES = 3
+AUTO_TRAFFIC_STREET_WINDOW = 300.0
+AUTO_TRAFFIC_STREET_CLEAR_TIME = 120.0
 
 
 def aol_blocked_by_immediate_disable(*alert_types) -> bool:
@@ -93,6 +107,13 @@ class StarPilotCard:
     self.pause_longitudinal = False
     self.switchback_mode_enabled = self.params_memory.get_bool("SwitchbackModeEnabled")
     self.traffic_mode_enabled = False
+    self.traffic_mode_manual = False
+    self.auto_traffic_mode = False
+    self._auto_traffic_high_sev_time = 0.0
+    self._auto_traffic_clear_time = 0.0
+    self._auto_traffic_street_episodes: list[float] = []
+    self._auto_traffic_prev_stopped_with_lead = False
+    self._auto_traffic_last_t: float | None = None
     self._favorite_traffic_mode_counter = self.params_memory.get_int(FAVORITE_ACTION_TRAFFIC_MODE_COUNTER)
 
     self.gap_counter = 0
@@ -108,6 +129,97 @@ class StarPilotCard:
     self.very_long_press_threshold = CRUISE_LONG_PRESS * 5
 
     self.error_log = ERROR_LOGS_PATH / "error.txt"
+
+  def _reset_auto_traffic(self):
+    self.auto_traffic_mode = False
+    self._auto_traffic_high_sev_time = 0.0
+    self._auto_traffic_clear_time = 0.0
+    self._auto_traffic_street_episodes = []
+    self._auto_traffic_prev_stopped_with_lead = False
+
+  def _toggle_traffic_mode_manual(self):
+    if self.traffic_mode_enabled:
+      # One press always flips the effective state: turning off kills both the
+      # manual flag and the auto detector (which must re-trigger from scratch).
+      self.traffic_mode_manual = False
+      self._reset_auto_traffic()
+    else:
+      self.traffic_mode_manual = True
+    self.traffic_mode_enabled = self.traffic_mode_manual or self.auto_traffic_mode
+
+  def _update_auto_traffic_mode(self, carState, sm, starpilot_toggles):
+    now = time.monotonic()
+    dt = max(0.0, now - self._auto_traffic_last_t) if self._auto_traffic_last_t is not None else 0.0
+    self._auto_traffic_last_t = now
+
+    long_active = bool(getattr(sm["carControl"], "longActive", False))
+    if not long_active or not getattr(starpilot_toggles, "openpilot_longitudinal", False):
+      self._reset_auto_traffic()
+      self.traffic_mode_enabled = self.traffic_mode_manual
+      return
+
+    v_ego = float(getattr(carState, "vEgo", 0.0) or 0.0)
+    v_cruise = float(getattr(getattr(carState, "cruiseState", None), "speed", 0.0) or 0.0)
+
+    speed_limit = 0.0
+    try:
+      mapd = sm["mapdOut"]
+    except KeyError:
+      mapd = None
+    if mapd is not None:
+      try:
+        speed_limit = float(getattr(mapd, "speedLimit", 0.0) or 0.0)
+      except (TypeError, ValueError):
+        speed_limit = 0.0
+
+    # Highway detector: severity = held-back ratio against min(set speed, map limit).
+    arming_ref = speed_limit if speed_limit > 1.0 else v_cruise
+    severity = 0.0
+    if arming_ref >= AUTO_TRAFFIC_HIGHWAY_MIN_REF_MS and v_cruise > 1.0:
+      reference = min(v_cruise, speed_limit) if speed_limit > 1.0 else v_cruise
+      if reference > 1.0:
+        severity = max(0.0, reference - v_ego) / reference
+
+    # Street detector: repeated standstill-with-lead episodes (stop-and-go).
+    standstill = bool(getattr(carState, "standstill", False))
+    lead_present = False
+    try:
+      radar = sm["radarState"]
+    except KeyError:
+      radar = None
+    if radar is not None:
+      for attr in ("leadOne", "leadTwo"):
+        lead = getattr(radar, attr, None)
+        if lead is not None and bool(getattr(lead, "status", False)):
+          lead_present = True
+          break
+    stopped_with_lead = standstill and lead_present
+    if stopped_with_lead and not self._auto_traffic_prev_stopped_with_lead:
+      self._auto_traffic_street_episodes.append(now)
+    self._auto_traffic_prev_stopped_with_lead = stopped_with_lead
+    self._auto_traffic_street_episodes = [
+      t for t in self._auto_traffic_street_episodes if now - t <= AUTO_TRAFFIC_STREET_WINDOW
+    ]
+
+    if not self.auto_traffic_mode:
+      if severity >= AUTO_TRAFFIC_JAM_SEVERITY:
+        self._auto_traffic_high_sev_time += dt
+      else:
+        self._auto_traffic_high_sev_time = 0.0
+      street_jam = len(self._auto_traffic_street_episodes) >= AUTO_TRAFFIC_STREET_EPISODES
+      if self._auto_traffic_high_sev_time >= AUTO_TRAFFIC_JAM_CONFIRM_TIME or street_jam:
+        self.auto_traffic_mode = True
+        self._auto_traffic_clear_time = 0.0
+    else:
+      street_recent = any(now - t <= AUTO_TRAFFIC_STREET_CLEAR_TIME for t in self._auto_traffic_street_episodes)
+      if severity < AUTO_TRAFFIC_CLEAR_SEVERITY and not street_recent:
+        self._auto_traffic_clear_time += dt
+      else:
+        self._auto_traffic_clear_time = 0.0
+      if self._auto_traffic_clear_time >= AUTO_TRAFFIC_CLEAR_CONFIRM_TIME:
+        self._reset_auto_traffic()
+
+    self.traffic_mode_enabled = self.traffic_mode_manual or self.auto_traffic_mode
 
   def handle_button_event(self, key, sm, starpilot_toggles):
     experimental_active = bool(getattr(sm["carControl"], "longActive", False) or
@@ -134,7 +246,7 @@ class StarPilotCard:
       self.switchback_mode_enabled = not self.switchback_mode_enabled
       self.params_memory.put_bool("SwitchbackModeEnabled", self.switchback_mode_enabled)
     elif sm["carControl"].longActive and getattr(starpilot_toggles, f"traffic_mode_via_{key}"):
-      self.traffic_mode_enabled = not self.traffic_mode_enabled
+      self._toggle_traffic_mode_manual()
     else:
       for slot_index in range(3):
         if getattr(starpilot_toggles, f"favorite_{slot_index + 1}_via_{key}", False):
@@ -194,7 +306,7 @@ class StarPilotCard:
     self._favorite_traffic_mode_counter = counter
 
     if pending > 0 and sm["carControl"].longActive and pending % 2:
-      self.traffic_mode_enabled = not self.traffic_mode_enabled
+      self._toggle_traffic_mode_manual()
 
   def handle_experimental_mode(self, sm, starpilot_toggles):
     if getattr(starpilot_toggles, "safe_mode", False):
@@ -463,6 +575,8 @@ class StarPilotCard:
     if not getattr(starpilot_toggles, "pulse_and_glide_available", False):
       self.pulse_and_glide = False
     self.force_coast &= not (carState.brakePressed or carState.gasPressed)
+
+    self._update_auto_traffic_mode(carState, sm, starpilot_toggles)
 
     starpilotCarState.accelPressed = self.accel_pressed
     starpilotCarState.alwaysOnLateralAllowed = self.always_on_lateral_allowed

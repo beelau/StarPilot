@@ -206,6 +206,7 @@ class DriverMonitoring:
     self.phone_prob = 0.
     self.phone_cnt = 0  # consecutive steps phone_prob has exceeded the phone threshold
     self.pose_cnt = 0  # consecutive steps head pose has exceeded the pose thresholds
+    self._phone_thresholds_active = False  # slow phone-only ladder currently overriding policy thresholds
 
     # drowsiness (sleep) detection state
     self.pitch_error_signed = 0.
@@ -284,6 +285,19 @@ class DriverMonitoring:
       self.threshold_alert_2 = 1. - self.settings._WHEELTOUCH_POLICY_ALERT_2_TIMEOUT / self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT
       self.step_change = DT_DMON / self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT
       self.active_policy = MonitoringPolicy.wheeltouch
+
+  def _restore_policy_thresholds(self):
+    # Recompute the stock alert timing for the active policy. Called once when a
+    # phone-only episode ends so the slow phone ladder does not stick around
+    # for later, non-phone distractions.
+    if self.active_policy == MonitoringPolicy.vision:
+      self.threshold_alert_1 = 1. - self.settings._VISION_POLICY_ALERT_1_TIMEOUT / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
+      self.threshold_alert_2 = 1. - self.settings._VISION_POLICY_ALERT_2_TIMEOUT / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
+      self.step_change = DT_DMON / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
+    else:
+      self.threshold_alert_1 = 1. - self.settings._WHEELTOUCH_POLICY_ALERT_1_TIMEOUT / self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT
+      self.threshold_alert_2 = 1. - self.settings._WHEELTOUCH_POLICY_ALERT_2_TIMEOUT / self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT
+      self.step_change = DT_DMON / self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT
 
   def _set_pose_strictness(self, brake_disengage_prob, car_speed):
     bp = brake_disengage_prob
@@ -521,6 +535,12 @@ class DriverMonitoring:
       self.threshold_alert_1 = 1. - s._PHONE_SLOW_ALERT_1_TIMEOUT / s._PHONE_SLOW_ALERT_3_TIMEOUT
       self.threshold_alert_2 = 1. - s._PHONE_SLOW_ALERT_2_TIMEOUT / s._PHONE_SLOW_ALERT_3_TIMEOUT
       self.step_change = DT_DMON / s._PHONE_SLOW_ALERT_3_TIMEOUT
+      self._phone_thresholds_active = True
+    elif self._phone_thresholds_active:
+      # Phone-only episode ended: restore stock timing so later distractions
+      # (eyes closed, looking away) escalate at full speed again.
+      self._restore_policy_thresholds()
+      self._phone_thresholds_active = False
     _reaching_alert_1 = self.awareness - self.step_change <= self.threshold_alert_1
     _reaching_alert_3 = self.awareness - self.step_change <= 0
     lowspeed_exemption = lowspeed and _reaching_alert_1

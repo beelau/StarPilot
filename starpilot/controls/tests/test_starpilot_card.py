@@ -1393,3 +1393,153 @@ def test_favorite_traffic_mode_action_is_consumed_when_not_active(monkeypatch, t
 
   assert card.traffic_mode_enabled is False
   assert card._favorite_traffic_mode_counter == 1
+
+
+MPH_TO_MS = 0.44704
+
+
+class FakeClock:
+  def __init__(self):
+    self.t = 1000.0
+
+  def __call__(self):
+    return self.t
+
+  def advance(self, dt):
+    self.t += dt
+
+
+def make_auto_sm(long_active=True, speed_limit_mph=0.0, lead=False):
+  sm = make_sm()
+  sm["carControl"] = SimpleNamespace(longActive=long_active)
+  sm["radarState"] = SimpleNamespace(
+    leadOne=SimpleNamespace(status=lead),
+    leadTwo=SimpleNamespace(status=False),
+  )
+  if speed_limit_mph:
+    sm["mapdOut"] = SimpleNamespace(speedLimit=speed_limit_mph * MPH_TO_MS)
+  return sm
+
+
+def make_auto_car_state(v_ego_mph, v_cruise_mph, standstill=False):
+  cs = make_car_state()
+  cs.vEgo = v_ego_mph * MPH_TO_MS
+  cs.cruiseState = SimpleNamespace(speed=v_cruise_mph * MPH_TO_MS)
+  cs.standstill = standstill
+  return cs
+
+
+def make_auto_card(monkeypatch, tmp_path):
+  monkeypatch.setattr(spc, "Params", FakeParams)
+  monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
+  return spc.StarPilotCard(SimpleNamespace(brand="gm"), SimpleNamespace(alternativeExperience=0))
+
+
+def run_detector(card, car_state, sm, toggles, clock, seconds, step=1.0):
+  for _ in range(int(seconds / step)):
+    clock.advance(step)
+    card._update_auto_traffic_mode(car_state, sm, toggles)
+
+
+def test_auto_traffic_highway_jam_engages(monkeypatch, tmp_path):
+  import time
+  clock = FakeClock()
+  monkeypatch.setattr(time, "monotonic", clock)
+  card = make_auto_card(monkeypatch, tmp_path)
+  toggles = make_toggles(openpilot_longitudinal=True)
+  sm = make_auto_sm(speed_limit_mph=65, lead=True)
+  cs = make_auto_car_state(v_ego_mph=20, v_cruise_mph=65)  # severity ~0.69
+
+  run_detector(card, cs, sm, toggles, clock, 11.0)
+  assert card.auto_traffic_mode is True
+  assert card.traffic_mode_enabled is True
+
+
+def test_auto_traffic_no_false_positive_when_set_above_limit(monkeypatch, tmp_path):
+  import time
+  clock = FakeClock()
+  monkeypatch.setattr(time, "monotonic", clock)
+  card = make_auto_card(monkeypatch, tmp_path)
+  toggles = make_toggles(openpilot_longitudinal=True)
+  sm = make_auto_sm(speed_limit_mph=60, lead=True)
+  cs = make_auto_car_state(v_ego_mph=60, v_cruise_mph=80)  # severity 0
+
+  run_detector(card, cs, sm, toggles, clock, 15.0)
+  assert card.auto_traffic_mode is False
+  assert card.traffic_mode_enabled is False
+
+
+def test_auto_traffic_street_episodes_engage(monkeypatch, tmp_path):
+  import time
+  clock = FakeClock()
+  monkeypatch.setattr(time, "monotonic", clock)
+  card = make_auto_card(monkeypatch, tmp_path)
+  toggles = make_toggles(openpilot_longitudinal=True)
+  sm = make_auto_sm(lead=True)
+  stopped = make_auto_car_state(v_ego_mph=0, v_cruise_mph=35, standstill=True)
+  moving = make_auto_car_state(v_ego_mph=25, v_cruise_mph=35, standstill=False)
+
+  for _ in range(3):
+    run_detector(card, stopped, sm, toggles, clock, 2.0)
+    run_detector(card, moving, sm, toggles, clock, 30.0)
+  assert card.auto_traffic_mode is True
+  assert card.traffic_mode_enabled is True
+
+
+def test_auto_traffic_clears_after_30s_free_flow(monkeypatch, tmp_path):
+  import time
+  clock = FakeClock()
+  monkeypatch.setattr(time, "monotonic", clock)
+  card = make_auto_card(monkeypatch, tmp_path)
+  toggles = make_toggles(openpilot_longitudinal=True)
+  sm = make_auto_sm(speed_limit_mph=65, lead=True)
+  jam = make_auto_car_state(v_ego_mph=20, v_cruise_mph=65)
+  free = make_auto_car_state(v_ego_mph=65, v_cruise_mph=65)
+
+  run_detector(card, jam, sm, toggles, clock, 11.0)
+  assert card.auto_traffic_mode is True
+  run_detector(card, free, sm, toggles, clock, 31.0)
+  assert card.auto_traffic_mode is False
+  assert card.traffic_mode_enabled is False
+
+
+def test_manual_toggle_single_press_flips_effective_state(monkeypatch, tmp_path):
+  import time
+  clock = FakeClock()
+  monkeypatch.setattr(time, "monotonic", clock)
+  card = make_auto_card(monkeypatch, tmp_path)
+  toggles = make_toggles(openpilot_longitudinal=True)
+  sm = make_auto_sm(speed_limit_mph=65, lead=True)
+  cs = make_auto_car_state(v_ego_mph=20, v_cruise_mph=65)
+
+  run_detector(card, cs, sm, toggles, clock, 11.0)
+  assert card.traffic_mode_enabled is True
+
+  # one press turns everything off, even though auto wanted it on
+  card._toggle_traffic_mode_manual()
+  assert card.traffic_mode_enabled is False
+  assert card.auto_traffic_mode is False
+  assert card.traffic_mode_manual is False
+
+  # one press turns it back on manually
+  card._toggle_traffic_mode_manual()
+  assert card.traffic_mode_enabled is True
+  assert card.traffic_mode_manual is True
+
+
+def test_auto_traffic_resets_on_disengage(monkeypatch, tmp_path):
+  import time
+  clock = FakeClock()
+  monkeypatch.setattr(time, "monotonic", clock)
+  card = make_auto_card(monkeypatch, tmp_path)
+  toggles = make_toggles(openpilot_longitudinal=True)
+  sm = make_auto_sm(speed_limit_mph=65, lead=True)
+  cs = make_auto_car_state(v_ego_mph=20, v_cruise_mph=65)
+
+  run_detector(card, cs, sm, toggles, clock, 11.0)
+  assert card.auto_traffic_mode is True
+
+  sm["carControl"] = SimpleNamespace(longActive=False)
+  run_detector(card, cs, sm, toggles, clock, 2.0)
+  assert card.auto_traffic_mode is False
+  assert card.traffic_mode_enabled is False
