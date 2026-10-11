@@ -491,6 +491,14 @@ class ModelRenderer(Widget):
       if i == 0 and radar_state.leadOne and radar_state.leadOne.status:
         if radar_state.leadOne.modelProb >= prob_threshold:
           color = lead_color
+          # Visual-only slow/stop warning: amber when the lead is slowing
+          # (we are closing on it), red when it is stopped. No sound.
+          v_lead = float(getattr(radar_state.leadOne, "vLead", 0.0) or 0.0)
+          v_rel = float(getattr(radar_state.leadOne, "vRel", 0.0) or 0.0)
+          if v_lead <= 1.0:
+            color = rl.Color(255, 60, 60, 255)  # lead stopped
+          elif v_rel < -1.5:
+            color = rl.Color(255, 165, 0, 255)  # lead slowing
         else:
           color = rl.WHITE
       else:
